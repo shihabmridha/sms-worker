@@ -1,0 +1,63 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "sms-worker",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-08-30",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 0.5
+  },
+  // Custom domain; the zone must exist on this Cloudflare account.
+  "routes": [{ "pattern": "sms.shihabmridha.com", "custom_domain": true }],
+  "workers_dev": true,
+  "vars": {
+    "FAKE_SMS": "false"
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "sms-worker",
+      // Replace after `wrangler d1 create sms-worker` (local dev works without).
+      "database_id": "00000000-0000-0000-0000-000000000000",
+      "migrations_dir": "drizzle"
+    }
+  ],
+  "kv_namespaces": [
+    {
+      "binding": "CACHE",
+      // Replace after `wrangler kv namespace create CACHE`.
+      "id": "00000000000000000000000000000000"
+    }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "PAYLOADS",
+      "bucket_name": "sms-worker-payloads"
+    }
+  ],
+  "queues": {
+    "producers": [{ "binding": "SMS_QUEUE", "queue": "sms-jobs" }],
+    "consumers": [
+      {
+        "queue": "sms-jobs",
+        // Workers Free allows 50 D1 queries per invocation; one chunk (250
+        // recipients ≈ 25 batched inserts) per invocation stays under it.
+        // Parallelism comes from consumer autoscaling, not batch size.
+        "max_batch_size": 1,
+        "max_retries": 5,
+        "dead_letter_queue": "sms-dlq"
+      },
+      {
+        "queue": "sms-dlq",
+        // Also 1: recording one dead-lettered chunk costs ~30 D1 queries
+        // (history inserts + finalize), and Workers Free caps an invocation
+        // at 50 — ten DLQ messages per batch would blow that budget.
+        "max_batch_size": 1,
+        "max_retries": 3
+      }
+    ]
+  },
+  // 21:00 UTC = 03:00 Asia/Dhaka — nightly history retention purge.
+  "triggers": { "crons": ["0 21 * * *"] }
+}
