@@ -3,13 +3,16 @@
 import type { Context } from "hono";
 import { getDb } from "../../db";
 import { upsertGlobalProvider } from "../../db/queries";
+import { invalidateAllAppConfigs } from "../../core/plan";
+import { encryptSecret } from "../../shared/crypto";
 import { PROVIDER_NAMES } from "../../shared/types";
 import type { AppEnv, ProviderName } from "../../shared/types";
+import { Panel, PageHeader } from "../components";
 import { getGlobalProviderRows } from "../data";
 import { redirectFlash, readFlash } from "../flash";
 import { Layout } from "../layout";
 import { adminPath } from "../paths";
-import { formChecked, formStr, parseIntOr } from "../util";
+import { formChecked, formStr, formatTs, parseIntOr } from "../util";
 
 const PROVIDER_LABELS: Record<ProviderName, string> = {
   bulksmsbd: "BulkSMSBD",
@@ -23,66 +26,124 @@ export async function providersGet(c: Context<AppEnv>): Promise<Response> {
 
   return c.html(
     <Layout title="Providers" active="providers" flash={flash}>
-      <h1>Global provider settings</h1>
-      <p class="muted">
-        These are the defaults used by apps that have no per-app provider plan. App caches refresh within
-        5 minutes of a change here.
-      </p>
-
-      <div class="card">
+      <PageHeader
+        eyebrow="PROVIDERS"
+        title="Global providers"
+        sub="Defaults for apps without their own provider plan. Credentials are stored encrypted in D1; changes take effect immediately."
+      />
+      <Panel flush>
         <form method="post" action={adminPath("/providers")}>
-          <table>
-            <thead>
-              <tr>
-                <th>Provider</th>
-                <th>Enabled</th>
-                <th>Priority</th>
-                <th>Sender ID</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((row) => (
+          <div class="table-wrap">
+            <table class="data">
+              <thead>
                 <tr>
-                  <td>{PROVIDER_LABELS[row.provider]}</td>
-                  <td>
-                    <input
-                      type="checkbox"
-                      name={`${row.provider}_enabled`}
-                      value="on"
-                      checked={row.enabled}
-                    />
-                  </td>
-                  <td>
-                    <input
-                      type="number"
-                      name={`${row.provider}_priority`}
-                      value={String(row.priority)}
-                      style="width:90px"
-                    />
-                  </td>
-                  <td>
-                    {row.provider === "bulksmsbd" ? (
-                      <input
-                        type="text"
-                        name={`${row.provider}_senderId`}
-                        value={row.senderId ?? ""}
-                        placeholder="numeric sender id"
-                      />
-                    ) : (
-                      <span class="muted">not used</span>
-                    )}
-                  </td>
+                  <th>Provider</th>
+                  <th>Enabled</th>
+                  <th>Priority</th>
+                  <th>Sender ID</th>
+                  <th>Username</th>
+                  <th>Sender name</th>
+                  <th>API key</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-          <p>
+              </thead>
+              <tbody>
+                {rows.map((row) => (
+                  <tr>
+                    <td>{PROVIDER_LABELS[row.provider]}</td>
+                    <td>
+                      <input
+                        class="check"
+                        type="checkbox"
+                        name={`${row.provider}_enabled`}
+                        value="on"
+                        checked={row.enabled}
+                      />
+                    </td>
+                    <td>
+                      <input
+                        class="input"
+                        type="number"
+                        name={`${row.provider}_priority`}
+                        value={String(row.priority)}
+                        style="width:90px"
+                      />
+                    </td>
+                    <td>
+                      {row.provider === "bulksmsbd" ? (
+                        <input
+                          class="input mono"
+                          type="text"
+                          name={`${row.provider}_senderId`}
+                          value={row.senderId ?? ""}
+                          placeholder="numeric sender id"
+                        />
+                      ) : (
+                        <span class="muted">Not used</span>
+                      )}
+                    </td>
+                    <td>
+                      {row.provider === "mimsms" ? (
+                        <input
+                          class="input mono"
+                          type="text"
+                          name={`${row.provider}_username`}
+                          value={row.username ?? ""}
+                          placeholder="username"
+                        />
+                      ) : (
+                        <span class="muted">Not used</span>
+                      )}
+                    </td>
+                    <td>
+                      {row.provider === "mimsms" ? (
+                        <input
+                          class="input"
+                          type="text"
+                          name={`${row.provider}_senderName`}
+                          value={row.senderName ?? ""}
+                          placeholder="sender name"
+                        />
+                      ) : (
+                        <span class="muted">Not used</span>
+                      )}
+                    </td>
+                    <td>
+                      <div style="display:flex;flex-direction:column;gap:6px">
+                        <span class={row.hasApiKey ? undefined : "muted"}>
+                          {row.hasApiKey
+                            ? row.updatedAt !== null
+                              ? `set · updated ${formatTs(row.updatedAt)}`
+                              : "set"
+                            : "not set"}
+                        </span>
+                        <input
+                          class="input mono"
+                          type="password"
+                          name={`${row.provider}_apiKey`}
+                          autocomplete="new-password"
+                          placeholder="leave blank to keep"
+                        />
+                        <label
+                          class="mono"
+                          style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted)"
+                        >
+                          <input class="check" type="checkbox" name={`${row.provider}_clearApiKey`} value="on" />
+                          Remove key
+                        </label>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <div class="panel-foot">
             <button type="submit" class="btn btn-primary">
               Save
             </button>
-          </p>
+          </div>
         </form>
-      </div>
+      </Panel>
     </Layout>,
   );
 }
@@ -91,17 +152,53 @@ export async function providersPost(c: Context<AppEnv>): Promise<Response> {
   const db = getDb(c.env);
   const body = await c.req.parseBody();
 
+  const parsed: {
+    provider: ProviderName;
+    enabled: boolean;
+    priority: number;
+    senderId: string | null;
+    username: string | null;
+    senderName: string | null;
+    apiKeyEnc?: string | null;
+  }[] = [];
+
+  // Parse and validate every provider's input before writing any of them, so
+  // a rejected key on one provider never leaves the other half-saved.
   for (const provider of PROVIDER_NAMES) {
     const enabled = formChecked(body[`${provider}_enabled`]);
     const priority = parseIntOr(formStr(body[`${provider}_priority`]), 100);
     const senderIdRaw = formStr(body[`${provider}_senderId`]);
-    await upsertGlobalProvider(db, {
+    const usernameRaw = formStr(body[`${provider}_username`]);
+    const senderNameRaw = formStr(body[`${provider}_senderName`]);
+    const apiKeyRaw = formStr(body[`${provider}_apiKey`]);
+    const clearApiKey = formChecked(body[`${provider}_clearApiKey`]);
+
+    if (apiKeyRaw.length > 512 || /\s/.test(apiKeyRaw)) {
+      return redirectFlash(
+        c,
+        adminPath("/providers"),
+        "API key must be at most 512 characters and contain no whitespace.",
+        "error",
+      );
+    }
+
+    const apiKeyEnc = clearApiKey ? null : apiKeyRaw ? await encryptSecret(c.env, apiKeyRaw) : undefined;
+
+    parsed.push({
       provider,
       enabled,
       priority,
-      senderId: senderIdRaw || null,
+      senderId: provider === "bulksmsbd" ? senderIdRaw || null : null,
+      username: provider === "mimsms" ? usernameRaw || null : null,
+      senderName: provider === "mimsms" ? senderNameRaw || null : null,
+      apiKeyEnc,
     });
   }
 
+  for (const input of parsed) {
+    await upsertGlobalProvider(db, input);
+  }
+
+  await invalidateAllAppConfigs(c.env);
   return redirectFlash(c, adminPath("/providers"), "Global provider settings saved.");
 }

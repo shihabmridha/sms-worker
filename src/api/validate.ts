@@ -11,6 +11,7 @@
 import type { Context } from "hono";
 import { HTTPException } from "hono/http-exception";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
+import { MAX_VARS_KEYS, MAX_VAR_VALUE_LENGTH } from "../shared/constants";
 import type { AppEnv } from "../shared/types";
 
 export function fail(status: ContentfulStatusCode, message: string): never {
@@ -57,7 +58,24 @@ export function normalizeRecipients(raw: unknown): RecipientInput[] {
         if (typeof obj.vars !== "object" || obj.vars === null || Array.isArray(obj.vars)) {
           return fail(400, `recipients[${index}]: "vars" must be an object`);
         }
-        vars = obj.vars as Record<string, string>;
+        const rawVars = obj.vars as Record<string, unknown>;
+        const varKeys = Object.keys(rawVars);
+        if (varKeys.length > MAX_VARS_KEYS) {
+          return fail(400, `recipients[${index}]: "vars" must contain at most ${MAX_VARS_KEYS} keys`);
+        }
+        for (const key of varKeys) {
+          const value = rawVars[key];
+          if (typeof value !== "string") {
+            return fail(400, `recipients[${index}]: "vars.${key}" must be a string`);
+          }
+          if (value.length > MAX_VAR_VALUE_LENGTH) {
+            return fail(
+              400,
+              `recipients[${index}]: "vars.${key}" exceeds ${MAX_VAR_VALUE_LENGTH} characters`,
+            );
+          }
+        }
+        vars = rawVars as Record<string, string>;
       }
       let message: string | undefined;
       if (obj.message !== undefined) {

@@ -87,7 +87,11 @@ CREATE TABLE `provider_settings` (
 	`provider` text PRIMARY KEY NOT NULL,
 	`enabled` integer DEFAULT true NOT NULL,
 	`priority` integer NOT NULL,
-	`sender_id` text
+	`sender_id` text,
+	`api_key_enc` text,
+	`username` text,
+	`sender_name` text,
+	`updated_at` integer
 );
 --> statement-breakpoint
 CREATE TABLE `templates` (

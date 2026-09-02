@@ -5,6 +5,7 @@ import { getDb } from "../../db";
 import { updateAdminPassword } from "../../db/queries";
 import { hashPassword, verifyPassword } from "../../shared/crypto";
 import type { AppEnv } from "../../shared/types";
+import { Kv, Panel, PageHeader } from "../components";
 import { getAdminById } from "../data";
 import { redirectFlash, readFlash } from "../flash";
 import { Layout } from "../layout";
@@ -20,21 +21,28 @@ export async function settingsGet(c: Context<AppEnv>): Promise<Response> {
   const flash = readFlash(c);
 
   return c.html(
-    <Layout title="Settings" active="settings" flash={flash}>
-      <h1>Settings</h1>
-      <div class="card">
-        <p>
-          Signed in as <strong>{admin?.username ?? `admin #${adminId}`}</strong>
-        </p>
-        <h2>Change password</h2>
+    <Layout title="Settings" active="settings" flash={flash} adminName={admin?.username}>
+      <PageHeader eyebrow="SETTINGS" title="Account" />
+      <Panel>
+        <Kv
+          items={[
+            {
+              label: "Signed in as",
+              value: <span class="mono">{admin?.username ?? `admin #${adminId}`}</span>,
+            },
+          ]}
+        />
+      </Panel>
+      <Panel title="Change password">
         <form method="post" action={adminPath("/settings")}>
-          <div class="field">
+          <div class="field field-narrow">
             <label for="current-password">Current password</label>
-            <input type="password" id="current-password" name="currentPassword" required />
+            <input class="input" type="password" id="current-password" name="currentPassword" required />
           </div>
-          <div class="field">
+          <div class="field field-narrow">
             <label for="new-password">New password</label>
             <input
+              class="input"
               type="password"
               id="new-password"
               name="newPassword"
@@ -42,11 +50,13 @@ export async function settingsGet(c: Context<AppEnv>): Promise<Response> {
               required
             />
           </div>
-          <button type="submit" class="btn btn-primary">
-            Update password
-          </button>
+          <div class="form-actions">
+            <button type="submit" class="btn btn-primary">
+              Update password
+            </button>
+          </div>
         </form>
-      </div>
+      </Panel>
     </Layout>,
   );
 }

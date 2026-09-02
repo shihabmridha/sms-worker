@@ -13,11 +13,43 @@ export const MAX_JOB_RECIPIENTS = 50_000;
 /** Sync /send cap; bigger sends must use the job path. */
 export const MAX_SYNC_RECIPIENTS = 100;
 
-/** Max accepted JSON body for job submission. */
+/**
+ * Max accepted JSON body for a sync /sms/send request. Derived from the
+ * worst legitimate shape: MAX_SYNC_RECIPIENTS (100) recipients, each up to
+ * ~1 KB of message text (MAX_MESSAGE_LENGTH) plus its `to` string and a
+ * bounded `vars` object (MAX_VARS_KEYS × MAX_VAR_VALUE_LENGTH) — comfortably
+ * under 200 KiB with JSON overhead; 256 KiB leaves headroom without opening
+ * the door to much larger inline payloads on the synchronous path.
+ */
+export const MAX_SYNC_BODY_BYTES = 256 * 1024;
+
+/**
+ * Max accepted JSON body for job submission (25 MiB). The binding constraint
+ * is the Worker isolate's 128 MB total memory, not Cloudflare's own edge
+ * limit on request bodies (100 MB on Free/Pro) — the request body must be
+ * read, JSON-parsed, and then the same payload written back out via an R2
+ * put, all inside that 128 MB alongside everything else the request needs,
+ * so the app-level cap is what actually protects the isolate.
+ *
+ * This does mean the theoretical worst case — MAX_JOB_RECIPIENTS (50,000)
+ * recipients each carrying a per-recipient message at MAX_MESSAGE_LENGTH
+ * (1,000 chars) — is ~50 MB of message text alone, well over this cap. Such
+ * jobs must be split into multiple /sms/jobs submissions; see README.
+ */
 export const MAX_BODY_BYTES = 25 * 1024 * 1024;
 
 /** Message body length cap (matches acadion's contract). */
 export const MAX_MESSAGE_LENGTH = 1000;
+
+/** Template name length cap. */
+export const MAX_TEMPLATE_NAME_LENGTH = 64;
+
+/** Max distinct keys accepted in one recipient's `vars` object. */
+export const MAX_VARS_KEYS = 20;
+
+/** Max length of a single `vars` value; shares the message-body cap since a
+ *  rendered template value ends up inline in the message body anyway. */
+export const MAX_VAR_VALUE_LENGTH = MAX_MESSAGE_LENGTH;
 
 /** History retention (Q9); enforced by the nightly cron. */
 export const RETENTION_DAYS = 90;
@@ -40,7 +72,8 @@ export const TEMPLATE_TOKEN_REGEX = /%([A-Z0-9_]+)%/g;
  *  cache a send-path availability shield, hence the generous TTLs. */
 export const KV_TTL_SECONDS = 300;
 export const kvAppByKeyHash = (keyHash: string) => `app:key:${keyHash}`;
-export const kvAppConfig = (appId: number) => `app:config:${appId}`;
+export const KV_APP_CONFIG_PREFIX = "app:config:";
+export const kvAppConfig = (appId: number) => `${KV_APP_CONFIG_PREFIX}${appId}`;
 
 /** R2 object key for a Job payload. */
 export const r2JobKey = (jobId: string) => `jobs/${jobId}.json`;

@@ -11,7 +11,7 @@ import { countAdmins, createAdmin, getAdminByUsername } from "../../db/queries";
 import { hashPassword, timingSafeEqualStr, verifyPassword } from "../../shared/crypto";
 import type { AppEnv } from "../../shared/types";
 import { redirectFlash, readFlash } from "../flash";
-import { Layout } from "../layout";
+import { LoginShell } from "../layout";
 import { adminPath } from "../paths";
 import { clearSession, createSession, readSession } from "../session";
 import { formRaw } from "../util";
@@ -21,28 +21,30 @@ const BOOTSTRAP_USERNAME = "admin";
 
 function LoginForm({ bootstrap }: { bootstrap: boolean }) {
   return (
-    <div class="card login-card">
-      <h1>Sign in</h1>
-      {bootstrap ? (
-        <p class="muted">
-          No admin account exists yet. Sign in as "{BOOTSTRAP_USERNAME}" with the bootstrap password to
-          create the first admin.
-        </p>
-      ) : null}
+    <>
+      <h1 class="page-title" style="font-size:20px;margin-bottom:20px">
+        Sign in
+      </h1>
       <form method="post" action={adminPath("/login")}>
         <div class="field">
           <label for="username">Username</label>
-          <input type="text" id="username" name="username" maxlength={64} required autofocus />
+          <input class="input" type="text" id="username" name="username" maxlength={64} required autofocus />
         </div>
         <div class="field">
           <label for="password">Password</label>
-          <input type="password" id="password" name="password" required />
+          <input class="input" type="password" id="password" name="password" required />
         </div>
-        <button type="submit" class="btn btn-primary">
+        <button type="submit" class="btn btn-primary" style="width:100%">
           Sign in
         </button>
       </form>
-    </div>
+      {bootstrap ? (
+        <p class="hint">
+          No admin exists yet. Sign in as {BOOTSTRAP_USERNAME} with the bootstrap password to create the
+          first account.
+        </p>
+      ) : null}
+    </>
   );
 }
 
@@ -55,9 +57,9 @@ export async function loginGet(c: Context<AppEnv>): Promise<Response> {
   const bootstrap = (await countAdmins(db)) === 0;
   const flash = readFlash(c);
   return c.html(
-    <Layout title="Sign in" flash={flash}>
+    <LoginShell title="Sign in" flash={flash}>
       <LoginForm bootstrap={bootstrap} />
-    </Layout>,
+    </LoginShell>,
   );
 }
 

@@ -4,12 +4,12 @@ import type { Context } from "hono";
 import { getDb } from "../../db";
 import { getJob, listJobs, listMessagesByJob } from "../../db/queries";
 import type { AppEnv } from "../../shared/types";
-import { NotFoundPage, Pagination } from "../components";
+import { Breadcrumb, ChunkProgress, Empty, Kv, NotFoundPage, PageHeader, Pagination, Panel, Status } from "../components";
 import { appNameMap } from "../data";
 import { readFlash } from "../flash";
 import { Layout } from "../layout";
 import { adminPath } from "../paths";
-import { formatTs, parseOffset, PAGE_SIZE } from "../util";
+import { formatNum, formatTs, PAGE_SIZE, parseOffset, shortId } from "../util";
 
 export async function jobsListGet(c: Context<AppEnv>): Promise<Response> {
   const db = getDb(c.env);
@@ -24,39 +24,52 @@ export async function jobsListGet(c: Context<AppEnv>): Promise<Response> {
 
   return c.html(
     <Layout title="Jobs" active="jobs" flash={flash}>
-      <h1>Jobs</h1>
-      {jobs.length === 0 ? (
-        <p class="muted">No jobs found.</p>
-      ) : (
-        <table>
-          <thead>
-            <tr>
-              <th>ID</th>
-              <th>App</th>
-              <th>Kind</th>
-              <th>Status</th>
-              <th>Total / Sent / Failed</th>
-              <th>Created</th>
-            </tr>
-          </thead>
-          <tbody>
-            {jobs.map((job) => (
-              <tr>
-                <td>
-                  <a href={adminPath(`/jobs/${job.id}`)}>{job.id}</a>
-                </td>
-                <td>{appNames.get(job.appId) ?? `#${job.appId}`}</td>
-                <td>{job.kind}</td>
-                <td>{job.status}</td>
-                <td>
-                  {job.total} / {job.sent} / {job.failed}
-                </td>
-                <td>{formatTs(job.createdAt)}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      )}
+      <PageHeader eyebrow="JOBS" title="Jobs" />
+
+      <Panel flush>
+        {jobs.length === 0 ? (
+          <Empty title="No jobs yet." hint="POST /v1/sms/jobs" />
+        ) : (
+          <div class="table-wrap">
+            <table class="data">
+              <thead>
+                <tr>
+                  <th>Job</th>
+                  <th>App</th>
+                  <th>Kind</th>
+                  <th>Status</th>
+                  <th>Progress</th>
+                  <th class="num">Sent</th>
+                  <th class="num">Failed</th>
+                  <th>Created</th>
+                </tr>
+              </thead>
+              <tbody>
+                {jobs.map((job) => (
+                  <tr>
+                    <td>
+                      <a class="mono row-link" href={adminPath(`/jobs/${job.id}`)} title={job.id}>
+                        {shortId(job.id)}…
+                      </a>
+                    </td>
+                    <td>{appNames.get(job.appId) ?? `#${job.appId}`}</td>
+                    <td>{job.kind}</td>
+                    <td>
+                      <Status value={job.status} />
+                    </td>
+                    <td>
+                      <ChunkProgress done={job.chunksDone} total={job.chunkCount} />
+                    </td>
+                    <td class="num">{formatNum(job.sent)}</td>
+                    <td class="num">{formatNum(job.failed)}</td>
+                    <td class="mono">{formatTs(job.createdAt)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Panel>
       <Pagination basePath={adminPath("/jobs")} offset={offset} limit={PAGE_SIZE} hasNext={hasNext} />
     </Layout>,
   );
@@ -80,84 +93,74 @@ export async function jobDetailGet(c: Context<AppEnv>): Promise<Response> {
   const messages = rows.slice(0, PAGE_SIZE);
   const flash = readFlash(c);
 
+  const kvItems = [
+    { label: "App", value: appNames.get(job.appId) ?? `#${job.appId}` },
+    { label: "Kind", value: job.kind },
+    { label: "Status", value: <Status value={job.status} /> },
+    { label: "Progress", value: <ChunkProgress done={job.chunksDone} total={job.chunkCount} /> },
+    {
+      label: "Total / Sent / Failed",
+      value: (
+        <span class="mono num">
+          {formatNum(job.total)} / {formatNum(job.sent)} / {formatNum(job.failed)}
+        </span>
+      ),
+    },
+    { label: "Created", value: <span class="mono">{formatTs(job.createdAt)}</span> },
+    { label: "Completed", value: <span class="mono">{formatTs(job.completedAt)}</span> },
+  ];
+  if (job.error) {
+    kvItems.push({ label: "Error", value: job.error });
+  }
+  if (job.templateId !== null && job.templateId !== undefined) {
+    kvItems.push({ label: "Template id", value: <span class="mono">{job.templateId}</span> });
+  }
+
   return c.html(
-    <Layout title={`Job ${job.id}`} active="jobs" flash={flash}>
-      <p>
-        <a href={adminPath("/jobs")}>Jobs</a> / {job.id}
-      </p>
-      <h1>Job {job.id}</h1>
+    <Layout title={`Job ${shortId(job.id)}`} active="jobs" flash={flash}>
+      <Breadcrumb items={[{ label: "Jobs", href: adminPath("/jobs") }, { label: shortId(job.id) }]} />
+      <PageHeader eyebrow="JOB" title={shortId(job.id)} />
 
-      <div class="card">
-        <div class="row">
-          <div>
-            <div class="muted">App</div>
-            <div>{appNames.get(job.appId) ?? `#${job.appId}`}</div>
-          </div>
-          <div>
-            <div class="muted">Kind</div>
-            <div>{job.kind}</div>
-          </div>
-          <div>
-            <div class="muted">Status</div>
-            <div>{job.status}</div>
-          </div>
-          <div>
-            <div class="muted">Total / Sent / Failed</div>
-            <div>
-              {job.total} / {job.sent} / {job.failed}
-            </div>
-          </div>
-          <div>
-            <div class="muted">Chunks</div>
-            <div>
-              {job.chunksDone} / {job.chunkCount}
-            </div>
-          </div>
-          <div>
-            <div class="muted">Created</div>
-            <div>{formatTs(job.createdAt)}</div>
-          </div>
-          <div>
-            <div class="muted">Completed</div>
-            <div>{formatTs(job.completedAt)}</div>
-          </div>
-        </div>
-        {job.error ? (
-          <p>
-            <span class="muted">Error:</span> {job.error}
-          </p>
-        ) : null}
-      </div>
+      <Panel>
+        <Kv items={kvItems} />
+      </Panel>
 
-      <h2>Messages</h2>
-      {messages.length === 0 ? (
-        <p class="muted">No messages recorded for this job yet.</p>
-      ) : (
-        <table>
-          <thead>
-            <tr>
-              <th>Recipient</th>
-              <th>Provider</th>
-              <th>Status</th>
-              <th>Reason</th>
-              <th>Tracking ID</th>
-              <th>Time</th>
-            </tr>
-          </thead>
-          <tbody>
-            {messages.map((msg) => (
-              <tr>
-                <td>{msg.recipient}</td>
-                <td>{msg.provider ?? "—"}</td>
-                <td>{msg.status}</td>
-                <td>{msg.reason ?? "—"}</td>
-                <td>{msg.trackingId ?? "—"}</td>
-                <td>{formatTs(msg.createdAt)}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      )}
+      <Panel title="Messages" flush>
+        {messages.length === 0 ? (
+          <Empty title="No messages recorded for this job yet." />
+        ) : (
+          <div class="table-wrap">
+            <table class="data">
+              <thead>
+                <tr>
+                  <th>Time</th>
+                  <th>Recipient</th>
+                  <th>Provider</th>
+                  <th>Status</th>
+                  <th>Reason</th>
+                  <th>Tracking ID</th>
+                </tr>
+              </thead>
+              <tbody>
+                {messages.map((msg) => (
+                  <tr>
+                    <td class="mono">{formatTs(msg.createdAt)}</td>
+                    <td class="mono">{msg.recipient}</td>
+                    <td>{msg.provider ?? "—"}</td>
+                    <td>
+                      <Status value={msg.status} />
+                    </td>
+                    <td class="muted cell-clip" title={msg.reason ?? undefined}>
+                      {msg.reason ?? "—"}
+                    </td>
+                    <td class="mono muted">{msg.trackingId ?? "—"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Panel>
       <Pagination
         basePath={adminPath(`/jobs/${job.id}`)}
         offset={offset}

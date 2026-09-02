@@ -3,23 +3,16 @@
  */
 
 import { Hono } from "hono";
-import { createTemplate, deleteTemplate, getDb, listTemplates, updateTemplate } from "../db";
-import { MAX_MESSAGE_LENGTH } from "../shared/constants";
+import { createTemplate, deleteTemplate, getDb, isUniqueConstraintError, listTemplates, updateTemplate } from "../db";
+import { MAX_MESSAGE_LENGTH, MAX_TEMPLATE_NAME_LENGTH } from "../shared/constants";
 import type { AppEnv } from "../shared/types";
 import { fail, parseIdParam, readJsonBody } from "./validate";
 
 export const templatesRoutes = new Hono<AppEnv>();
 
-/** D1/SQLite surfaces a unique-index violation as a plain Error whose message
- *  names the constraint; there's no typed error class exported for it. */
-function isUniqueConstraintError(err: unknown): boolean {
-  const message = err instanceof Error ? err.message : String(err);
-  return message.toUpperCase().includes("UNIQUE");
-}
-
 function validateName(name: unknown): string {
-  if (typeof name !== "string" || name.length < 1 || name.length > 64) {
-    return fail(400, `"name" must be 1-64 characters`);
+  if (typeof name !== "string" || name.length < 1 || name.length > MAX_TEMPLATE_NAME_LENGTH) {
+    return fail(400, `"name" must be 1-${MAX_TEMPLATE_NAME_LENGTH} characters`);
   }
   return name;
 }

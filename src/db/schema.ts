@@ -38,6 +38,13 @@ export const providerSettings = sqliteTable("provider_settings", {
   priority: int("priority").notNull(),
   /** Nullable global default sender id. */
   senderId: text("sender_id"),
+  /** AES-GCM ciphertext, same format as masking_profiles.api_key_enc. */
+  apiKeyEnc: text("api_key_enc"),
+  /** mimsms account username. */
+  username: text("username"),
+  /** mimsms sender name. */
+  senderName: text("sender_name"),
+  updatedAt: int("updated_at"),
 });
 
 export const appProviders = sqliteTable(

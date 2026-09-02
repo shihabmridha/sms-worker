@@ -39,11 +39,6 @@ npm run db:migrate:local     # local dev
 npm run db:migrate:remote    # production D1
 
 # 3. Secrets (production)
-npx wrangler secret put SMS_API_KEY              # BulkSMSBD
-npx wrangler secret put MIMSMS_API_KEY
-npx wrangler secret put MIMSMS_USERNAME
-npx wrangler secret put MIMSMS_SENDER_NAME
-npx wrangler secret put BULKSMSBD_SENDER_ID
 npx wrangler secret put ENCRYPTION_KEY           # any long random string
 npx wrangler secret put SESSION_SECRET           # any long random string
 npx wrangler secret put ADMIN_BOOTSTRAP_PASSWORD
@@ -56,6 +51,16 @@ npm run deploy               # deploys to sms.shihabmridha.com
 First admin login: username `admin` + the `ADMIN_BOOTSTRAP_PASSWORD` value
 (only works while no admin exists; change the password in Settings after).
 Register an App in the UI — the API key is shown exactly once.
+
+### 5. Provider credentials
+
+Provider credentials are not worker secrets — after first login, open
+Admin → Providers and enter each provider's API key and sender identity
+(sender id for BulkSMSBD; username + sender name for MiMSMS). They're stored
+AES-GCM-encrypted in D1 (`ENCRYPTION_KEY`) and changes apply immediately.
+Local dev runs with `FAKE_SMS=true`, so no credentials are needed; to hit
+real providers locally, set `FAKE_SMS=false` in `.dev.vars` and enter
+credentials in the UI.
 
 ## API
 
@@ -81,6 +86,18 @@ empty), `GET|PUT /v1/providers` (per-app enable/priority),
 `GET /v1/masking-profiles`. Add `"maskingProfile": "<label>"` to a send/job
 to dispatch with that profile's sender identity/credentials.
 
+### Request limits
+
+- `/sms/send`: body ≤ 256 KiB, ≤ 100 recipients.
+- `/sms/jobs`: body ≤ 25 MiB, ≤ 50,000 recipients — a job whose per-recipient
+  bodies would exceed 25 MiB combined (e.g. 50,000 recipients each near the
+  1,000-char message cap) must be split into multiple `/sms/jobs`
+  submissions.
+- `vars`: at most 20 keys per recipient, each value a string of at most 1,000
+  characters.
+- An oversized body is rejected before it's read, as `413 {"error": "request
+  body too large"}`.
+
 ## Notes
 
 - Delivery is **at-least-once** end to end (queue redelivery + provider
@@ -90,5 +107,8 @@ to dispatch with that profile's sender identity/credentials.
   happens inside its adapter only.
 - Sizing constants (chunk 250, sync cap 100, job cap 50k) are tuned for
   **Workers Free** limits — see `src/shared/constants.ts` before raising.
-- After changing provider/masking config, app caches (KV) refresh within
-  5 minutes (or instantly via the UI/API paths that invalidate).
+- API key rotation and app activate/deactivate take effect immediately (D1 is
+  authoritative for auth — see ADR 0003). Global provider credential saves
+  (ADR 0004) and per-app provider/masking changes made through the UI/API
+  invalidate app caches (KV) instantly; anything else refreshes within
+  5 minutes.

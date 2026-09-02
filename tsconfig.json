@@ -11,7 +11,12 @@
     "isolatedModules": true,
     "forceConsistentCasingInFileNames": true,
     "jsx": "react-jsx",
-    "jsxImportSource": "hono/jsx"
+    "jsxImportSource": "hono/jsx",
+    // Explicit allowlist: without this, tsc auto-includes every @types/*
+    // package found anywhere under node_modules (transitively, including
+    // vitest's), which would leak ambient globals into Worker source. None
+    // needed here — Env/bindings come from worker-configuration.d.ts.
+    "types": []
   },
-  "include": ["src/**/*", "worker-configuration.d.ts"]
+  "include": ["src/**/*", "worker-configuration.d.ts", "drizzle.config.ts"]
 }

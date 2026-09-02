@@ -5,7 +5,8 @@ import { handleQueue } from "./queue/consumer";
 import { handleScheduled } from "./queue/scheduled";
 import type { AppEnv } from "./shared/types";
 
-const app = new Hono<AppEnv>();
+// strict: false — /admin and /admin/ are the same page.
+const app = new Hono<AppEnv>({ strict: false });
 
 app.get("/", (c) => c.redirect("/admin"));
 app.get("/health", (c) => c.json({ ok: true }));

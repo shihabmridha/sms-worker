@@ -1,0 +1,6 @@
+# Provider credentials (BulkSMSBD / MiMSMS) are NOT env vars — after first
+# admin login, set them at Admin -> Providers; they're stored encrypted in D1.
+FAKE_SMS=true
+ENCRYPTION_KEY=change-me-any-long-random-string
+SESSION_SECRET=change-me-any-long-random-string
+ADMIN_BOOTSTRAP_PASSWORD=change-me

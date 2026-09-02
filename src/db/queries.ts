@@ -29,6 +29,17 @@ export type Db = DrizzleD1Database<typeof schema>;
 
 const now = (): number => Math.floor(Date.now() / 1000);
 
+/** D1/SQLite reports a unique-index violation as a plain Error naming the
+ *  constraint, but drizzle wraps it in a DrizzleQueryError whose own message
+ *  is just "Failed query: ..." — the SQLite text lives on the `cause` chain,
+ *  so walk it. */
+export function isUniqueConstraintError(err: unknown): boolean {
+  for (let e: unknown = err; e instanceof Error; e = e.cause) {
+    if (e.message.toUpperCase().includes("UNIQUE")) return true;
+  }
+  return false;
+}
+
 function firstOrThrow<T>(rows: T[], what: string): T {
   const row = rows[0];
   if (!row) throw new Error(`${what}: expected a row, got none`);
@@ -118,8 +129,18 @@ export async function getGlobalProviders(db: Db) {
 
 export async function upsertGlobalProvider(
   db: Db,
-  input: { provider: ProviderName; enabled: boolean; priority: number; senderId?: string | null },
+  input: {
+    provider: ProviderName;
+    enabled: boolean;
+    priority: number;
+    /** For each optional field: undefined = keep existing value, null = clear, string = set. */
+    senderId?: string | null;
+    username?: string | null;
+    senderName?: string | null;
+    apiKeyEnc?: string | null;
+  },
 ) {
+  const ts = now();
   const rows = await db
     .insert(providerSettings)
     .values({
@@ -127,10 +148,22 @@ export async function upsertGlobalProvider(
       enabled: input.enabled,
       priority: input.priority,
       senderId: input.senderId ?? null,
+      username: input.username ?? null,
+      senderName: input.senderName ?? null,
+      apiKeyEnc: input.apiKeyEnc ?? null,
+      updatedAt: ts,
     })
     .onConflictDoUpdate({
       target: providerSettings.provider,
-      set: { enabled: input.enabled, priority: input.priority, senderId: input.senderId ?? null },
+      set: {
+        enabled: input.enabled,
+        priority: input.priority,
+        updatedAt: ts,
+        ...(input.senderId !== undefined ? { senderId: input.senderId } : {}),
+        ...(input.username !== undefined ? { username: input.username } : {}),
+        ...(input.senderName !== undefined ? { senderName: input.senderName } : {}),
+        ...(input.apiKeyEnc !== undefined ? { apiKeyEnc: input.apiKeyEnc } : {}),
+      },
     })
     .returning();
   return firstOrThrow(rows, "upsertGlobalProvider");

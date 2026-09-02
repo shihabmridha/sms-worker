@@ -12,6 +12,8 @@ code, API fields, and UI labels use these words.
   providers, and view history.
 - **API Key** — Opaque bearer token (`sk_...`) issued once at App
   registration; only its hash is stored. Identifies and authenticates an App.
+  Rotation and deactivation take effect immediately when D1 is reachable;
+  during a D1 outage the last cached auth verdict (≤ 300 s old) is used.
 - **Provider** — An external SMS gateway the worker can dispatch through.
   Currently `bulksmsbd` and `mimsms`.
 - **Priority** — Per-App ordering of enabled Providers. Dispatch tries
@@ -19,7 +21,7 @@ code, API fields, and UI labels use these words.
 - **Masking Profile** — A per-App override of a Provider's credentials and
   sender identity (sender id/name, API key), used when an App has bought SMS
   masking from a Provider. Absent a profile, the global Provider credentials
-  (worker secrets) are used.
+  (encrypted in D1, managed at Admin → Providers) are used.
 - **Send** — A synchronous dispatch request: one message (or per-recipient
   messages), processed inline in the HTTP request, immediate result.
 - **Job** — An asynchronous bulk dispatch. Accepted with `202 + jobId`,

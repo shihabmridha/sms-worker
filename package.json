@@ -7,17 +7,21 @@
     "deploy": "wrangler deploy",
     "types": "wrangler types",
     "typecheck": "tsc --noEmit",
+    "typecheck:test": "tsc --noEmit -p test/tsconfig.json",
     "db:generate": "drizzle-kit generate",
     "db:migrate:local": "wrangler d1 migrations apply sms-worker --local",
-    "db:migrate:remote": "wrangler d1 migrations apply sms-worker --remote"
+    "db:migrate:remote": "wrangler d1 migrations apply sms-worker --remote",
+    "test": "vitest run"
   },
   "dependencies": {
     "drizzle-orm": "^0.45.2",
     "hono": "^4.13.5"
   },
   "devDependencies": {
+    "@cloudflare/vitest-plugin": "^1.1.2",
     "drizzle-kit": "^0.31.10",
     "typescript": "^5.9.2",
+    "vitest": "^4.1.11",
     "wrangler": "^4.127.1"
   }
 }

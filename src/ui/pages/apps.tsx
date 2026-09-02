@@ -1,15 +1,17 @@
 /**
  * GET/POST /apps (list + create) and the /apps/:id detail page: activate
  * toggle, key rotation, per-app provider plan editor, masking profiles, and
- * a read-only template list.
+ * template create/delete (edit lives on its own page, see ./templates).
  */
 
 import type { Context } from "hono";
-import { getDb } from "../../db";
+import { getDb, isUniqueConstraintError } from "../../db";
 import {
   createApp,
   createMaskingProfile,
+  createTemplate,
   deleteMaskingProfile,
+  deleteTemplate,
   getAppById,
   listApps,
   listMaskingProfiles,
@@ -19,10 +21,12 @@ import {
   upsertAppProvider,
 } from "../../db/queries";
 import { invalidateAppConfig } from "../../core/plan";
+import { invalidateAppAuthCache, writeAppAuthCache } from "../../core/auth-cache";
 import { encryptSecret, generateApiKey } from "../../shared/crypto";
+import { MAX_MESSAGE_LENGTH, MAX_TEMPLATE_NAME_LENGTH } from "../../shared/constants";
 import { PROVIDER_NAMES } from "../../shared/types";
 import type { AppEnv, ProviderName } from "../../shared/types";
-import { NotFoundPage } from "../components";
+import { Breadcrumb, Empty, Kv, NotFoundPage, PageHeader, Panel, Segments } from "../components";
 import { getAppProviderRows } from "../data";
 import { redirectFlash, readFlash } from "../flash";
 import type { Flash } from "../flash";
@@ -42,17 +46,13 @@ function isProviderName(value: string): value is ProviderName {
 function ApiKeyReveal({ appName, backHref, apiKey }: { appName: string; backHref: string; apiKey: string }) {
   return (
     <Layout title="API key" active="apps">
-      <h1>API key for {appName}</h1>
-      <div class="card">
-        <p>
-          <strong>This key will never be shown again.</strong> Copy it now and store it somewhere safe — the
-          worker only keeps a hash of it.
-        </p>
-        <div class="key-box">{apiKey}</div>
+      <PageHeader eyebrow="API KEY" title={appName} sub="Shown once. Store it now — only a hash is kept." />
+      <Panel>
+        <div class="key-reveal">{apiKey}</div>
         <a class="btn btn-primary" href={backHref}>
           Done
         </a>
-      </div>
+      </Panel>
     </Layout>
   );
 }
@@ -68,50 +68,56 @@ export async function appsListGet(c: Context<AppEnv>): Promise<Response> {
 
   return c.html(
     <Layout title="Apps" active="apps" flash={flash}>
-      <h1>Apps</h1>
-      {apps.length === 0 ? (
-        <p class="muted">No apps registered yet.</p>
-      ) : (
-        <table>
-          <thead>
-            <tr>
-              <th>Name</th>
-              <th>Key prefix</th>
-              <th>Status</th>
-              <th>Created</th>
-            </tr>
-          </thead>
-          <tbody>
-            {apps.map((app) => (
-              <tr>
-                <td>
-                  <a href={adminPath(`/apps/${app.id}`)}>{app.name}</a>
-                </td>
-                <td>{app.keyPrefix}</td>
-                <td>
-                  <span class={`badge ${app.isActive ? "badge-active" : "badge-inactive"}`}>
-                    {app.isActive ? "active" : "inactive"}
-                  </span>
-                </td>
-                <td>{formatTs(app.createdAt)}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      )}
+      <PageHeader eyebrow="APPS" title="Apps" />
 
-      <h2>Register a new app</h2>
-      <div class="card">
-        <form method="post" action={adminPath("/apps")}>
-          <div class="field">
-            <label for="name">Name</label>
-            <input type="text" id="name" name="name" maxlength={64} required />
+      <Panel flush>
+        {apps.length === 0 ? (
+          <Empty title="No apps yet." hint="Register one below to get an API key." />
+        ) : (
+          <div class="table-wrap">
+            <table class="data">
+              <thead>
+                <tr>
+                  <th>Name</th>
+                  <th>Key prefix</th>
+                  <th>Status</th>
+                  <th>Created</th>
+                </tr>
+              </thead>
+              <tbody>
+                {apps.map((app) => (
+                  <tr>
+                    <td>
+                      <a href={adminPath(`/apps/${app.id}`)}>{app.name}</a>
+                    </td>
+                    <td class="mono">{app.keyPrefix}</td>
+                    <td>
+                      <span class={`badge ${app.isActive ? "badge-on" : "badge-off"}`}>
+                        {app.isActive ? "Active" : "Inactive"}
+                      </span>
+                    </td>
+                    <td class="mono">{formatTs(app.createdAt)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
-          <button type="submit" class="btn btn-primary">
-            Create app
-          </button>
+        )}
+      </Panel>
+
+      <Panel title="Register app">
+        <form method="post" action={adminPath("/apps")}>
+          <div class="form-row">
+            <div class="field">
+              <label for="name">Name</label>
+              <input class="input" type="text" id="name" name="name" maxlength={64} required />
+            </div>
+            <button type="submit" class="btn btn-primary" style="align-self:flex-end">
+              Register app
+            </button>
+          </div>
         </form>
-      </div>
+      </Panel>
     </Layout>,
   );
 }
@@ -164,188 +170,262 @@ export async function appDetailGet(c: Context<AppEnv>): Promise<Response> {
 
   return c.html(
     <Layout title={app.name} active="apps" flash={flash}>
-      <p>
-        <a href={adminPath("/apps")}>Apps</a> / {app.name}
-      </p>
-      <h1>{app.name}</h1>
+      <Breadcrumb items={[{ label: "Apps", href: adminPath("/apps") }, { label: app.name }]} />
+      <PageHeader
+        eyebrow="APP"
+        title={app.name}
+        actions={
+          <>
+            <form method="post" action={adminPath(`/apps/${app.id}/active`)}>
+              <input type="hidden" name="active" value={app.isActive ? "false" : "true"} />
+              <button type="submit" class="btn">
+                {app.isActive ? "Deactivate" : "Activate"}
+              </button>
+            </form>
+            <form
+              method="post"
+              action={adminPath(`/apps/${app.id}/rotate-key`)}
+              onsubmit="return confirm('Rotate this app’s API key? The current key will stop working immediately.')"
+            >
+              <button type="submit" class="btn btn-danger">
+                Rotate key
+              </button>
+            </form>
+          </>
+        }
+      />
 
-      <div class="card">
-        <div class="row">
-          <div>
-            <div class="muted">Status</div>
-            <span class={`badge ${app.isActive ? "badge-active" : "badge-inactive"}`}>
-              {app.isActive ? "active" : "inactive"}
-            </span>
-          </div>
-          <form method="post" action={adminPath(`/apps/${app.id}/active`)}>
-            <input type="hidden" name="active" value={app.isActive ? "false" : "true"} />
-            <button type="submit" class="btn">
-              {app.isActive ? "Deactivate" : "Activate"}
-            </button>
-          </form>
-          <form
-            method="post"
-            action={adminPath(`/apps/${app.id}/rotate-key`)}
-            onsubmit="return confirm('Rotate this app’s API key? The current key will stop working immediately.')"
-          >
-            <button type="submit" class="btn btn-danger">
-              Rotate key
-            </button>
-          </form>
-        </div>
-      </div>
+      <Panel>
+        <Kv
+          items={[
+            {
+              label: "Status",
+              value: (
+                <span class={`badge ${app.isActive ? "badge-on" : "badge-off"}`}>
+                  {app.isActive ? "Active" : "Inactive"}
+                </span>
+              ),
+            },
+            { label: "Key prefix", value: <span class="mono">{app.keyPrefix}</span> },
+            { label: "Created", value: <span class="mono">{formatTs(app.createdAt)}</span> },
+          ]}
+        />
+      </Panel>
 
-      <h2>Provider plan</h2>
-      <div class="card">
+      <Panel title="Provider plan" flush>
         <form method="post" action={adminPath(`/apps/${app.id}/providers`)}>
-          <table>
-            <thead>
-              <tr>
-                <th>Provider</th>
-                <th>Enabled</th>
-                <th>Priority</th>
-              </tr>
-            </thead>
-            <tbody>
-              {providerRows.map((row) => (
+          <div class="table-wrap">
+            <table class="data">
+              <thead>
                 <tr>
-                  <td>{PROVIDER_LABELS[row.provider]}</td>
-                  <td>
-                    <input
-                      type="checkbox"
-                      name={`${row.provider}_enabled`}
-                      value="on"
-                      checked={row.enabled}
-                    />
-                  </td>
-                  <td>
-                    <input
-                      type="number"
-                      name={`${row.provider}_priority`}
-                      value={String(row.priority)}
-                      style="width:90px"
-                    />
-                  </td>
+                  <th>Provider</th>
+                  <th>Enabled</th>
+                  <th>Priority</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-          <p>
+              </thead>
+              <tbody>
+                {providerRows.map((row) => (
+                  <tr>
+                    <td>{PROVIDER_LABELS[row.provider]}</td>
+                    <td>
+                      <input
+                        class="check"
+                        type="checkbox"
+                        name={`${row.provider}_enabled`}
+                        value="on"
+                        checked={row.enabled}
+                      />
+                    </td>
+                    <td>
+                      <input
+                        class="input"
+                        type="number"
+                        name={`${row.provider}_priority`}
+                        value={String(row.priority)}
+                        style="width:90px"
+                      />
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <div class="panel-foot">
             <button type="submit" class="btn btn-primary">
               Save provider plan
             </button>
-          </p>
+          </div>
         </form>
-      </div>
+      </Panel>
 
-      <h2>Masking profiles</h2>
-      <div class="card">
+      <Panel title="Masking profiles" flush>
         {profiles.length === 0 ? (
-          <p class="muted">No masking profiles for this app.</p>
+          <Empty title="No masking profiles." hint="Add one below when a customer buys SMS masking." />
         ) : (
-          <table>
-            <thead>
-              <tr>
-                <th>Label</th>
-                <th>Provider</th>
-                <th>Sender ID</th>
-                <th>Sender name</th>
-                <th>Username</th>
-                <th>Key</th>
-                <th></th>
-              </tr>
-            </thead>
-            <tbody>
-              {profiles.map((profile) => (
+          <div class="table-wrap">
+            <table class="data">
+              <thead>
                 <tr>
-                  <td>{profile.label}</td>
-                  <td>{PROVIDER_LABELS[profile.provider]}</td>
-                  <td>{profile.senderId ?? "—"}</td>
-                  <td>{profile.senderName ?? "—"}</td>
-                  <td>{profile.username ?? "—"}</td>
-                  <td>{profile.apiKeyEnc ? "set" : "—"}</td>
-                  <td>
-                    <form
-                      method="post"
-                      action={adminPath(`/apps/${app.id}/masking-profiles/${profile.id}/delete`)}
-                      onsubmit="return confirm('Delete this masking profile? This cannot be undone.')"
-                    >
-                      <button type="submit" class="btn btn-danger">
-                        Delete
-                      </button>
-                    </form>
-                  </td>
+                  <th>Label</th>
+                  <th>Provider</th>
+                  <th>Sender ID</th>
+                  <th>Sender name</th>
+                  <th>Username</th>
+                  <th>API key</th>
+                  <th></th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
-
-        <h2>Add masking profile</h2>
-        <form method="post" action={adminPath(`/apps/${app.id}/masking-profiles`)}>
-          <div class="row">
-            <div class="field inline-field">
-              <label for="mp-provider">Provider</label>
-              <select id="mp-provider" name="provider" required>
-                {PROVIDER_NAMES.map((p) => (
-                  <option value={p}>{PROVIDER_LABELS[p]}</option>
+              </thead>
+              <tbody>
+                {profiles.map((profile) => (
+                  <tr>
+                    <td>{profile.label}</td>
+                    <td>{PROVIDER_LABELS[profile.provider]}</td>
+                    <td class="mono">{profile.senderId ?? "—"}</td>
+                    <td>{profile.senderName ?? "—"}</td>
+                    <td class="mono">{profile.username ?? "—"}</td>
+                    <td>{profile.apiKeyEnc ? "Set" : "—"}</td>
+                    <td>
+                      <form
+                        method="post"
+                        action={adminPath(`/apps/${app.id}/masking-profiles/${profile.id}/delete`)}
+                        onsubmit="return confirm('Delete this masking profile? This cannot be undone.')"
+                      >
+                        <button type="submit" class="btn btn-danger btn-sm">
+                          Delete
+                        </button>
+                      </form>
+                    </td>
+                  </tr>
                 ))}
-              </select>
-            </div>
-            <div class="field inline-field">
-              <label for="mp-label">Label</label>
-              <input type="text" id="mp-label" name="label" maxlength={32} required />
-            </div>
+              </tbody>
+            </table>
           </div>
-          <div class="row">
-            <div class="field inline-field">
-              <label for="mp-sender-id">Sender ID (bulksmsbd)</label>
-              <input type="text" id="mp-sender-id" name="senderId" />
-            </div>
-            <div class="field inline-field">
-              <label for="mp-sender-name">Sender name (mimsms)</label>
-              <input type="text" id="mp-sender-name" name="senderName" />
-            </div>
-            <div class="field inline-field">
-              <label for="mp-username">Username (mimsms)</label>
-              <input type="text" id="mp-username" name="username" />
-            </div>
-          </div>
-          <div class="field">
-            <label for="mp-api-key">API key (optional override)</label>
-            <input type="text" id="mp-api-key" name="apiKey" autocomplete="off" />
-          </div>
-          <button type="submit" class="btn btn-primary">
-            Add profile
-          </button>
-        </form>
-      </div>
-
-      <h2>Templates</h2>
-      <div class="card">
-        {templates.length === 0 ? (
-          <p class="muted">No templates for this app.</p>
-        ) : (
-          <table>
-            <thead>
-              <tr>
-                <th>Name</th>
-                <th>Body</th>
-                <th>Updated</th>
-              </tr>
-            </thead>
-            <tbody>
-              {templates.map((tpl) => (
-                <tr>
-                  <td>{tpl.name}</td>
-                  <td>{tpl.body}</td>
-                  <td>{formatTs(tpl.updatedAt)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
         )}
-      </div>
+
+        <div class="panel-foot">
+          <form method="post" action={adminPath(`/apps/${app.id}/masking-profiles`)}>
+            <div class="form-row">
+              <div class="field">
+                <label for="mp-provider">Provider</label>
+                <select class="select" id="mp-provider" name="provider" required>
+                  {PROVIDER_NAMES.map((p) => (
+                    <option value={p}>{PROVIDER_LABELS[p]}</option>
+                  ))}
+                </select>
+              </div>
+              <div class="field">
+                <label for="mp-label">Label</label>
+                <input class="input" type="text" id="mp-label" name="label" maxlength={32} required />
+              </div>
+            </div>
+            <div class="form-row">
+              <div class="field">
+                <label for="mp-sender-id">Sender ID (BulkSMSBD)</label>
+                <input class="input mono" type="text" id="mp-sender-id" name="senderId" />
+              </div>
+              <div class="field">
+                <label for="mp-sender-name">Sender name (MimSms)</label>
+                <input class="input" type="text" id="mp-sender-name" name="senderName" />
+              </div>
+              <div class="field">
+                <label for="mp-username">Username (MimSms)</label>
+                <input class="input mono" type="text" id="mp-username" name="username" />
+              </div>
+            </div>
+            <div class="form-row">
+              <div class="field">
+                <label for="mp-api-key">API key override</label>
+                <input class="input mono" type="text" id="mp-api-key" name="apiKey" autocomplete="off" />
+              </div>
+            </div>
+            <button type="submit" class="btn btn-primary">
+              Add profile
+            </button>
+          </form>
+        </div>
+      </Panel>
+
+      <Panel title="Templates" flush>
+        {templates.length === 0 ? (
+          <Empty title="No templates." hint="Add one below." />
+        ) : (
+          <div class="table-wrap">
+            <table class="data">
+              <thead>
+                <tr>
+                  <th>Name</th>
+                  <th>Body</th>
+                  <th>Updated</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody>
+                {templates.map((tpl) => (
+                  <tr>
+                    <td>{tpl.name}</td>
+                    <td class="cell-wrap">
+                      <div class="mono">{tpl.body}</div>
+                      <Segments body={tpl.body} />
+                    </td>
+                    <td class="mono">{formatTs(tpl.updatedAt)}</td>
+                    <td>
+                      <div style="display:flex;gap:8px">
+                        <a class="btn btn-sm" href={adminPath(`/apps/${app.id}/templates/${tpl.id}`)}>
+                          Edit
+                        </a>
+                        <form
+                          method="post"
+                          action={adminPath(`/apps/${app.id}/templates/${tpl.id}/delete`)}
+                          onsubmit="return confirm('Delete this template? This cannot be undone.')"
+                        >
+                          <button type="submit" class="btn btn-danger btn-sm">
+                            Delete
+                          </button>
+                        </form>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        <div class="panel-foot">
+          <form method="post" action={adminPath(`/apps/${app.id}/templates`)}>
+            <div class="form-row">
+              <div class="field">
+                <label for="tpl-name">Name</label>
+                <input
+                  class="input"
+                  type="text"
+                  id="tpl-name"
+                  name="name"
+                  maxlength={MAX_TEMPLATE_NAME_LENGTH}
+                  required
+                />
+              </div>
+            </div>
+            <div class="field">
+              <label for="tpl-body">Body</label>
+              <textarea
+                class="input"
+                id="tpl-body"
+                name="body"
+                rows={3}
+                maxlength={MAX_MESSAGE_LENGTH}
+                required
+              />
+            </div>
+            <p class="muted">
+              Use %TOKENS% (A-Z, 0-9, _) for per-recipient values; a missing variable renders as empty.
+            </p>
+            <button type="submit" class="btn btn-primary">
+              Add template
+            </button>
+          </form>
+        </div>
+      </Panel>
     </Layout>,
   );
 }
@@ -368,6 +448,9 @@ export async function appActivePost(c: Context<AppEnv>): Promise<Response> {
   const body = await c.req.parseBody();
   const desired = formStr(body.active) === "true";
   await setAppActive(db, id, desired);
+  // Overwrite (not delete) so an outage-time request sees 403 rather than
+  // 503 for a key we know is deactivated (ADR 0003).
+  await writeAppAuthCache(c.env, app.keyHash, { id: app.id, name: app.name, isActive: desired });
   return redirectFlash(
     c,
     adminPath(`/apps/${id}`),
@@ -385,6 +468,11 @@ export async function appRotateKeyPost(c: Context<AppEnv>): Promise<Response> {
   const generated = await generateApiKey();
   const ok = await rotateAppKey(db, id, generated.hash, generated.prefix);
   if (!ok) return notFoundOrRedirect(c);
+
+  // Purge the OLD key's cache entry so it can't be used to authenticate
+  // during a D1 outage after rotation (ADR 0003). Awaited, not waitUntil,
+  // so the response implies completion.
+  await invalidateAppAuthCache(c.env, app.keyHash);
 
   return c.html(
     <ApiKeyReveal appName={app.name} backHref={adminPath(`/apps/${app.id}`)} apiKey={generated.key} />,
@@ -477,3 +565,70 @@ export async function appMaskingDeletePost(c: Context<AppEnv>): Promise<Response
   );
 }
 
+export async function appTemplateCreatePost(c: Context<AppEnv>): Promise<Response> {
+  const id = parseId(c.req.param("id"));
+  if (id === null) return notFoundOrRedirect(c);
+  const db = getDb(c.env);
+  const app = await getAppById(db, id);
+  if (!app) return notFoundOrRedirect(c);
+
+  const body = await c.req.parseBody();
+  const name = formStr(body.name);
+  const tplBody = formStr(body.body);
+
+  if (name.length < 1 || name.length > MAX_TEMPLATE_NAME_LENGTH) {
+    return redirectFlash(
+      c,
+      adminPath(`/apps/${id}`),
+      `"name" must be 1-${MAX_TEMPLATE_NAME_LENGTH} characters`,
+      "error",
+    );
+  }
+  if (tplBody.length < 1 || tplBody.length > MAX_MESSAGE_LENGTH) {
+    return redirectFlash(
+      c,
+      adminPath(`/apps/${id}`),
+      `"body" must be 1-${MAX_MESSAGE_LENGTH} characters`,
+      "error",
+    );
+  }
+
+  try {
+    await createTemplate(db, { appId: id, name, body: tplBody });
+  } catch (err) {
+    if (isUniqueConstraintError(err)) {
+      return redirectFlash(
+        c,
+        adminPath(`/apps/${id}`),
+        `A template named "${name}" already exists.`,
+        "error",
+      );
+    }
+    throw err;
+  }
+
+  // No invalidateAppConfig here: templates aren't KV-cached (unlike masking
+  // profiles / provider plan) — the send path fetches them from D1 by id on
+  // every request, so there's nothing to invalidate.
+  return redirectFlash(c, adminPath(`/apps/${id}`), "Template added.");
+}
+
+export async function appTemplateDeletePost(c: Context<AppEnv>): Promise<Response> {
+  const id = parseId(c.req.param("id"));
+  const templateId = parseId(c.req.param("templateId"));
+  if (id === null || templateId === null) return notFoundOrRedirect(c);
+  const db = getDb(c.env);
+  const app = await getAppById(db, id);
+  if (!app) return notFoundOrRedirect(c);
+
+  const deleted = await deleteTemplate(db, id, templateId);
+
+  return redirectFlash(
+    c,
+    adminPath(`/apps/${id}`),
+    deleted
+      ? `Template deleted. API calls still sending templateId=${templateId} will now get 404.`
+      : "Template not found.",
+    deleted ? "success" : "error",
+  );
+}

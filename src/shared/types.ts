@@ -21,7 +21,7 @@ export interface SmsDynamicMessage {
 
 /**
  * Credentials a provider adapter dispatches with. Resolved per request:
- * masking profile (app-owned, D1) → global settings + worker secrets.
+ * masking profile (app-owned, D1) → global provider settings (D1, encrypted).
  */
 export interface ProviderCredentials {
   apiKey: string;

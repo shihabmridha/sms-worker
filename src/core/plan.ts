@@ -4,7 +4,7 @@
  *
  * Credential resolution per provider (CONTEXT.md "Masking Profile"):
  *   masking profile (app-owned, D1, api key AES-GCM encrypted)
- *     → global provider settings (D1 sender id) + worker secrets.
+ *     → global provider settings (D1, api key AES-GCM encrypted).
  *
  * App config is KV-cached (ADR 0002: the cache is an availability shield —
  * a warm cache lets sends proceed through a D1 outage). D1 stays the source
@@ -14,7 +14,7 @@
 import type { Db } from "../db/queries";
 import { getAppProviderPlan, getGlobalProviders, listMaskingProfiles } from "../db/queries";
 import { decryptSecret } from "../shared/crypto";
-import { KV_TTL_SECONDS, kvAppConfig } from "../shared/constants";
+import { KV_APP_CONFIG_PREFIX, KV_TTL_SECONDS, kvAppConfig } from "../shared/constants";
 import type { DispatchPlanEntry, ProviderName } from "../shared/types";
 import { BulkSmsBd } from "../sms/bulksmsbd";
 import { MimSms } from "../sms/mimsms";
@@ -29,10 +29,17 @@ interface CachedProfile {
   apiKeyEnc: string | null;
 }
 
+interface CachedGlobal {
+  senderId: string | null;
+  senderName: string | null;
+  username: string | null;
+  apiKeyEnc: string | null;
+}
+
 export interface AppDispatchConfig {
   plan: { provider: ProviderName; priority: number }[];
-  /** Global (non-secret) sender id per provider, from provider_settings. */
-  globalSenderIds: Partial<Record<ProviderName, string | null>>;
+  /** Global provider defaults from provider_settings (ciphertext only; decrypted at use). */
+  globals: Partial<Record<ProviderName, CachedGlobal>>;
   profiles: CachedProfile[];
 }
 
@@ -41,7 +48,7 @@ export async function loadAppConfig(env: Env, db: Db, appId: number): Promise<Ap
   const cached = await env.CACHE.get<AppDispatchConfig>(key, "json").catch(() => null);
   if (cached) return cached;
 
-  const [plan, globals, profiles] = await Promise.all([
+  const [plan, globalRows, profiles] = await Promise.all([
     getAppProviderPlan(db, appId),
     getGlobalProviders(db),
     listMaskingProfiles(db, appId),
@@ -49,7 +56,12 @@ export async function loadAppConfig(env: Env, db: Db, appId: number): Promise<Ap
 
   const config: AppDispatchConfig = {
     plan,
-    globalSenderIds: Object.fromEntries(globals.map((g) => [g.provider, g.senderId])),
+    globals: Object.fromEntries(
+      globalRows.map((g) => [
+        g.provider,
+        { senderId: g.senderId, senderName: g.senderName, username: g.username, apiKeyEnc: g.apiKeyEnc },
+      ]),
+    ),
     profiles: profiles.map((p) => ({
       provider: p.provider,
       label: p.label,
@@ -73,6 +85,28 @@ export async function invalidateAppConfig(env: Env, appId: number): Promise<void
   await env.CACHE.delete(kvAppConfig(appId)).catch((err: unknown) => {
     console.warn(JSON.stringify({ event: "app_config_cache_delete_failed", appId, error: String(err) }));
   });
+}
+
+/**
+ * Clears every cached app config. Called on global provider save — a save
+ * changes credentials/sender identity every app's plan may inherit, and the
+ * per-app cache has no way to know which apps that affects, so every entry
+ * is dropped. Fires only on an explicit admin action and the app count is
+ * tiny, so the ADR 0002 cost (one cold refill per app on next send) is
+ * acceptable here. Best-effort: must never throw.
+ */
+export async function invalidateAllAppConfigs(env: Env): Promise<void> {
+  try {
+    let cursor: string | undefined;
+    for (;;) {
+      const list = await env.CACHE.list({ prefix: KV_APP_CONFIG_PREFIX, cursor });
+      await Promise.all(list.keys.map((k) => env.CACHE.delete(k.name)));
+      if (list.list_complete) break;
+      cursor = list.cursor;
+    }
+  } catch (err) {
+    console.warn(JSON.stringify({ event: "app_config_cache_clear_failed", error: String(err) }));
+  }
 }
 
 export interface BuiltPlan {
@@ -101,30 +135,31 @@ export async function buildDispatchPlan(
       ? config.profiles.find((p) => p.provider === item.provider && p.label === maskingLabel)
       : undefined;
     if (profile) maskingMatched = true;
+    const global = config.globals[item.provider];
 
-    const apiKey = profile?.apiKeyEnc
-      ? await decryptSecret(env, profile.apiKeyEnc)
-      : item.provider === "bulksmsbd"
-        ? env.SMS_API_KEY
-        : env.MIMSMS_API_KEY;
+    // Credentials resolve masking profile → global provider settings, both
+    // D1-backed; there is no worker-secret fallback. A provider without
+    // credentials is omitted from the chain rather than failing the whole
+    // dispatch — the warning is additive, callers treat warnings as
+    // non-fatal.
+    const apiKeyEnc = profile?.apiKeyEnc ?? global?.apiKeyEnc;
+    const apiKey = apiKeyEnc ? await decryptSecret(env, apiKeyEnc) : undefined;
     if (!apiKey) {
-      // Matches acadion: a provider without credentials is silently omitted
-      // from the chain rather than failing the whole dispatch.
+      warnings.push(`${item.provider} omitted: no API key configured (Admin → Providers)`);
       continue;
     }
 
     try {
       if (item.provider === "bulksmsbd") {
-        const senderId =
-          profile?.senderId ?? config.globalSenderIds.bulksmsbd ?? env.BULKSMSBD_SENDER_ID;
+        const senderId = profile?.senderId ?? global?.senderId;
         if (!senderId) {
           warnings.push("bulksmsbd omitted: no sender id configured");
           continue;
         }
         entries.push({ provider: new BulkSmsBd({ apiKey, senderId }) });
       } else {
-        const username = profile?.username ?? env.MIMSMS_USERNAME;
-        const senderName = profile?.senderName ?? env.MIMSMS_SENDER_NAME;
+        const username = profile?.username ?? global?.username;
+        const senderName = profile?.senderName ?? global?.senderName;
         if (!username || !senderName) {
           warnings.push("mimsms omitted: username/senderName not configured");
           continue;

@@ -1,14 +1,17 @@
 /**
- * Bearer-token auth middleware for the app-facing API (ADR 0002:
- * send-before-record — auth reads are KV-cache-first so a warm cache lets
- * requests through a D1 outage; a cold cache during an outage has nothing
- * to verify against and fails closed with 503, which the ADR accepts).
+ * Bearer-token auth middleware for the app-facing API (ADR 0003: D1-first,
+ * KV-fallback — supersedes the KV-cache-first read order from ADR 0002).
+ * D1 is authoritative whenever it's reachable, so key rotation and app
+ * deactivation take effect immediately; ADR 0002's intent is preserved as
+ * the outage path — a warm cache still lets requests through a D1 outage,
+ * and a cold cache during an outage still fails closed with 503.
  */
 
 import { createMiddleware } from "hono/factory";
 import { getAppByKeyHash, getDb } from "../db";
 import { sha256Hex } from "../shared/crypto";
-import { KV_TTL_SECONDS, kvAppByKeyHash } from "../shared/constants";
+import { kvAppByKeyHash } from "../shared/constants";
+import { writeAppAuthCache } from "../core/auth-cache";
 import type { AppEnv, AuthedApp } from "../shared/types";
 
 function parseBearerToken(header: string | undefined): string | null {
@@ -27,53 +30,49 @@ export const authMiddleware = createMiddleware<AppEnv>(async (c, next) => {
   const hash = await sha256Hex(token);
   const cacheKey = kvAppByKeyHash(hash);
 
-  let authed: AuthedApp | null = null;
+  let cached: AuthedApp | null = null;
   try {
-    authed = await c.env.CACHE.get<AuthedApp>(cacheKey, "json");
+    cached = await c.env.CACHE.get<AuthedApp>(cacheKey, "json");
   } catch (err) {
-    // KV failures are swallowed (ADR 0002) — fall through to D1.
+    // KV failures are swallowed — D1 is queried regardless, below.
     console.warn(
       JSON.stringify({
         event: "auth_cache_get_failed",
         error: err instanceof Error ? err.message : String(err),
       }),
     );
-    authed = null;
+    cached = null;
   }
 
-  if (!authed) {
+  let authed: AuthedApp | null;
+  try {
     const db = getDb(c.env);
-    let row: Awaited<ReturnType<typeof getAppByKeyHash>>;
-    try {
-      row = await getAppByKeyHash(db, hash);
-    } catch (err) {
-      // Cold cache + D1 down: nothing to authenticate against (ADR 0002).
-      console.error(
-        JSON.stringify({
-          event: "auth_d1_lookup_failed",
-          error: err instanceof Error ? err.message : String(err),
-        }),
-      );
-      return c.json({ error: "service unavailable" }, 503);
-    }
-
+    const row = await getAppByKeyHash(db, hash);
     if (!row) {
       return c.json({ error: "unauthorized" }, 401);
     }
-
     authed = { id: row.id, name: row.name, isActive: row.isActive };
 
-    // Cache write is best-effort and must never block/fail the request.
-    const authedForCache = authed;
-    c.executionCtx.waitUntil(
-      c.env.CACHE.put(cacheKey, JSON.stringify(authedForCache), {
-        expirationTtl: KV_TTL_SECONDS,
-      }).catch((err: unknown) => {
-        console.warn(
-          JSON.stringify({ event: "auth_cache_put_failed", error: String(err) }),
-        );
+    // Refresh KV only when it's missing or stale so rotation/deactivation
+    // aren't undone by a write racing an already-correct cache. KV writes
+    // must stay rare (Workers Free: 1,000/day) — this keeps it to at most
+    // one per key per TTL window in the common case.
+    if (!cached || JSON.stringify(cached) !== JSON.stringify(authed)) {
+      const authedForCache = authed;
+      c.executionCtx.waitUntil(writeAppAuthCache(c.env, hash, authedForCache));
+    }
+  } catch (err) {
+    // D1 unreachable: fall back to the warm cache (outage shield, ADR 0003).
+    console.error(
+      JSON.stringify({
+        event: "auth_d1_lookup_failed",
+        error: err instanceof Error ? err.message : String(err),
       }),
     );
+    if (!cached) {
+      return c.json({ error: "service unavailable" }, 503);
+    }
+    authed = cached;
   }
 
   if (!authed.isActive) {

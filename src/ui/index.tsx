@@ -24,6 +24,8 @@ import {
   appRotateKeyPost,
   appsCreatePost,
   appsListGet,
+  appTemplateCreatePost,
+  appTemplateDeletePost,
 } from "./pages/apps";
 import { dashboardGet } from "./pages/dashboard";
 import { jobDetailGet, jobsListGet } from "./pages/jobs";
@@ -31,9 +33,10 @@ import { loginGet, loginPost, logoutPost } from "./pages/login";
 import { messagesGet } from "./pages/messages";
 import { providersGet, providersPost } from "./pages/providers";
 import { settingsGet, settingsPost } from "./pages/settings";
+import { templateEditGet, templateEditPost } from "./pages/templates";
 import { authMiddleware, csrfMiddleware } from "./session";
 
-export const adminRoutes = new Hono<AppEnv>();
+export const adminRoutes = new Hono<AppEnv>({ strict: false });
 
 // CSRF: applies to every route registered below, including /login.
 adminRoutes.use("*", csrfMiddleware);
@@ -62,6 +65,10 @@ adminRoutes.post("/apps/:id/rotate-key", appRotateKeyPost);
 adminRoutes.post("/apps/:id/providers", appProvidersPost);
 adminRoutes.post("/apps/:id/masking-profiles", appMaskingCreatePost);
 adminRoutes.post("/apps/:id/masking-profiles/:profileId/delete", appMaskingDeletePost);
+adminRoutes.post("/apps/:id/templates", appTemplateCreatePost);
+adminRoutes.get("/apps/:id/templates/:templateId", templateEditGet);
+adminRoutes.post("/apps/:id/templates/:templateId", templateEditPost);
+adminRoutes.post("/apps/:id/templates/:templateId/delete", appTemplateDeletePost);
 
 adminRoutes.get("/providers", providersGet);
 adminRoutes.post("/providers", providersPost);
