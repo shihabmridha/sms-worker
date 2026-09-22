@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import { cors } from "hono/cors";
 import { apiRoutes } from "./api";
 import { adminRoutes } from "./ui";
 import { handleQueue } from "./queue/consumer";
@@ -6,7 +7,18 @@ import { handleScheduled } from "./queue/scheduled";
 import type { AppEnv } from "./shared/types";
 
 // strict: false — /admin and /admin/ are the same page.
-const app = new Hono<AppEnv>({ strict: false });
+export const app = new Hono<AppEnv>({ strict: false });
+
+app.use(
+  "*",
+  cors({
+    origin: "*",
+    allowMethods: ["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH", "HEAD"],
+    allowHeaders: ["*"],
+    exposeHeaders: ["*"],
+    maxAge: 86400,
+  }),
+);
 
 app.get("/", (c) => c.redirect("/admin"));
 app.get("/health", (c) => c.json({ ok: true }));
